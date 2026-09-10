@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>صفحة السائق - تتبع السيارة</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, sans-serif; }
+  body { background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 16px; }
+  .container { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; text-align: center; margin-bottom: 4px; color: #38bdf8; }
+  .subtitle { text-align: center; font-size: .8rem; color: #94a3b8; margin-bottom: 16px; }
+  .card { background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  label { display: block; font-size: .85rem; margin-bottom: 6px; color: #cbd5e1; }
+  input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155;
+          background: #0f172a; color: #e2e8f0; font-size: 1rem; }
+  input:focus { outline: none; border-color: #38bdf8; }
+  .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 1.05rem;
+         font-weight: bold; cursor: pointer; margin-top: 10px; transition: .2s; }
+  .btn-start { background: #16a34a; color: #fff; }
+  .btn-start:hover { background: #15803d; }
+  .btn-stop { background: #dc2626; color: #fff; display: none; }
+  .btn-stop:hover { background: #b91c1c; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: .9rem; margin-top: 12px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
+  .dot.active { background: #22c55e; box-shadow: 0 0 10px #22c55e; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .coords { font-family: monospace; font-size: .85rem; color: #7dd3fc; margin-top: 10px;
+            background: #0f172a; padding: 10px; border-radius: 8px; display: none; }
+  #map { height: 250px; border-radius: 12px; margin-top: 12px; display: none; }
+  .error { color: #f87171; font-size: .85rem; margin-top: 10px; display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🚗 صفحة السائق</h1>
+  <p class="subtitle">تتبع لحظي لموقع السيارة عبر GPS</p>
+
+  <div class="card">
+    <label>🔑 كود السيارة (يجب أن يعرفه الراكب):</label>
+    <input type="text" id="vehicleId" value="car-001" placeholder="مثال: car-001">
+
+    <button class="btn btn-start" id="btnStart" onclick="startTracking()">▶️ بدء التتبع</button>
+    <button class="btn btn-stop" id="btnStop" onclick="stopTracking()">⏹ إيقاف التتبع</button>
+
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">غير متصل — اضغط "بدء التتبع"</span>
+    </div>
+    <div class="coords" id="coordsBox"></div>
+    <div class="error" id="errorBox"></div>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ============================================================
+   ① ضع إعدادات مشروع Firebase هنا (Firebase Config)
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "ضع_API_KEY_هنا",
+  authDomain: "ضع_PROJECT_ID.firebaseapp.com",
+  databaseURL: "https://ضع_PROJECT_ID-default-rtdb.firebaseio.com",
+  projectId: "ضع_PROJECT_ID",
+  storageBucket: "ضع_PROJECT_ID.appspot.com",
+  messagingSenderId: "ضع_SENDER_ID",
+  appId: "ضع_APP_ID"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+let watchId = null;
+let map = null, marker = null;
+
+function setStatus(tracking) {
+  document.getElementById('statusDot').classList.toggle('active', tracking);
+  document.getElementById('statusText').textContent = tracking
+    ? 'متصل — يتم إرسال الموقع الآن ✅'
+    : 'غير متصل — اضغط "بدء التتبع"';
+  document.getElementById('btnStart').style.display = tracking ? 'none' : 'block';
+  document.getElementById('btnStop').style.display  = tracking ? 'block' : 'none';
+  document.getElementById('coordsBox').style.display = tracking ? 'block' : 'none';
+  document.getElementById('map').style.display = tracking ? 'block' : 'none';
+}
+
+function showError(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+  setTimeout(() => box.style.display = 'none', 5000);
+}
+
+function startTracking() {
+  if (!navigator.geolocation) { showError('المتصفح لا يدعم GPS'); return; }
+  const vehicleId = document.getElementById('vehicleId').value.trim();
+  if (!vehicleId) { showError('اكتب كود السيارة أولاً'); return; }
+
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const data = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        speed: pos.coords.speed || 0,
+        heading: pos.coords.heading || 0,
+        accuracy: pos.coords.accuracy,
+        timestamp: firebase.database.ServerValue.TIMESTAMP,
+        active: true
+      };
+      db.ref('tracking/' + vehicleId).set(data);
+
+      document.getElementById('coordsBox').innerHTML =
+        `📍 ${data.lat.toFixed(6)} , ${data.lng.toFixed(6)}<br>` +
+        `🕐 ${new Date().toLocaleTimeString('ar-EG')} — الدقة: ${Math.round(data.accuracy)}م`;
+
+      if (!map) {
+        map = L.map('map').setView([data.lat, data.lng], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap'
+        }).addTo(map);
+        marker = L.marker([data.lat, data.lng]).addTo(map);
+      } else {
+        marker.setLatLng([data.lat, data.lng]);
+        map.panTo([data.lat, data.lng]);
+      }
+      setStatus(true);
+    },
+    (err) => {
+      showError('خطأ GPS: ' + err.message + ' — تأكد من تفعيل الموقع و HTTPS');
+    },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+  );
+  setStatus(true);
+}
+
+function stopTracking() {
+  const vehicleId = document.getElementById('vehicleId').value.trim();
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if (vehicleId) db.ref('tracking/' + vehicleId + '/active').set(false);
+  setStatus(false);
+}
+
+window.addEventListener('beforeunload', stopTracking);
+</script>
+</body>
+</html>
