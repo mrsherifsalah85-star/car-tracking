@@ -13,9 +13,9 @@
   .subtitle { text-align: center; font-size: .78rem; color: #94a3b8; margin-bottom: 12px; }
   .card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
   label { display: block; font-size: .82rem; margin-bottom: 6px; color: #cbd5e1; }
-  input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155;
+  input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155;
           background: #0f172a; color: #e2e8f0; font-size: 1rem; }
-  input:focus { outline: none; border-color: #38bdf8; }
+  input:focus, select:focus { outline: none; border-color: #38bdf8; }
   .btn { width: 100%; padding: 13px; border: none; border-radius: 10px; font-size: 1rem;
          font-weight: bold; cursor: pointer; margin-top: 10px; background: #0284c7; color: #fff; }
   .btn:hover { background: #0369a1; }
@@ -42,6 +42,13 @@
     <label>🔑 كود السيارة التي تريد تتبعها:</label>
     <input type="text" id="vehicleId" value="car-001" placeholder="نفس كود السائق">
     <button class="btn" id="btnTrack" onclick="startWatching()">📡 ابدأ المتابعة</button>
+    <label style="margin-top:12px">🔊 التنبيه الصوتي قبل وصول الباص بـ:</label>
+    <select id="alertBefore">
+      <option value="5" selected>5 دقائق</option>
+      <option value="3">3 دقائق</option>
+      <option value="1">دقيقة واحدة</option>
+      <option value="0">إيقاف التنبيه</option>
+    </select>
     <div class="error" id="errorBox"></div>
   </div>
 
@@ -80,7 +87,6 @@ const firebaseConfig = {
   measurementId: "G-279KCRRWCO"
 };
 
-
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
@@ -90,6 +96,27 @@ let map, carMarker, meMarker, routeLine;
 let myPos = null, carPos = null;
 let lastRouteTime = 0, lastCarLoc = null;
 let fbListener = null, myWatchId = null;
+let audioCtx = null, alerted = false;
+
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playAlarm() {
+  ensureAudio();
+  for (let i = 0; i < 6; i++) {
+    const t = audioCtx.currentTime + i * 0.4;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.frequency.value = (i % 2) ? 880 : 660;
+    gain.gain.setValueAtTime(0.5, t);
+    gain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+    osc.start(t); osc.stop(t + 0.3);
+  }
+  if (navigator.vibrate) navigator.vibrate([300,150,300,150,600]);
+}
 
 const carIcon = L.divIcon({ className:'', html:'<div style="font-size:26px">🚗</div>',
   iconSize:[30,30], iconAnchor:[15,15] });
@@ -105,6 +132,110 @@ function showError(msg) {
 function initMap() {
   map = L.map('map').setView([30.0444, 31.2357], 13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap', maxZoom: 19
+  }).addTo(map);
+}
+
+function startWatching() {
+  const vehicleId = document.getElementById('vehicleId').value.trim();
+  if (!vehicleId) { showError('اكتب كود السيارة'); return; }
+  if (!navigator.geolocation) { showError('المتصفح لا يدعم GPS'); return; }
+  if (!map) initMap();
+  ensureAudio(); // تفعيل الصوت من ضغطة المستخدم
+
+  document.getElementById('btnTrack').disabled = true;
+  document.getElementById('btnTrack').textContent = '⏳ جارِ الاتصال...';
+
+  myWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      if (!meMarker) {
+        meMarker = L.marker([myPos.lat, myPos.lng], { icon: meIcon }).addTo(map)
+          .bindPopup('📍 أنت هنا');
+        map.setView([myPos.lat, myPos.lng], 15);
+      } else {
+        meMarker.setLatLng([myPos.lat, myPos.lng]);
+      }
+      tryRoute();
+    },
+    (err) => showError('خطأ GPS: ' + err.message + ' — فعّل الموقع'),
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+  );
+
+  if (fbListener) db.ref('tracking/' + vehicleId).off('value', fbListener);
+  fbListener = db.ref('tracking/' + vehicleId).on('value', (snap) => {
+    const d = snap.val();
+    if (!d || d.active === false) {
+      showError('السيارة غير متصلة حالياً — انتظر بدء السائق للتتبع');
+      return;
+    }
+    carPos = { lat: d.lat, lng: d.lng };
+    if (!carMarker) {
+      carMarker = L.marker([carPos.lat, carPos.lng], { icon: carIcon }).addTo(map)
+        .bindPopup('🚗 السيارة');
+    } else {
+      carMarker.setLatLng([carPos.lat, carPos.lng]);
+    }
+    document.getElementById('btnTrack').textContent = '✅ متصل — تتبع نشط';
+    tryRoute();
+  });
+}
+
+async function tryRoute() {
+  if (!myPos || !carPos) return;
+  const now = Date.now();
+
+  if (lastCarLoc && lastRouteTime) {
+    const moved = map.distance(
+      L.latLng(lastCarLoc.lat, lastCarLoc.lng),
+      L.latLng(carPos.lat, carPos.lng)
+    );
+    if (moved < 40 && now - lastRouteTime < 20000) return;
+  }
+  lastRouteTime = now;
+  lastCarLoc = { ...carPos };
+
+  try {
+    const url = `${OSRM_URL}${carPos.lng},${carPos.lat};${myPos.lng},${myPos.lat}` +
+                `?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const json = await res.json();
+
+    if (json.code !== 'Ok' || !json.routes.length) {
+      showError('تعذر حساب المسار — حاول لاحقاً');
+      return;
+    }
+    const route = json.routes[0];
+
+    if (routeLine) map.removeLayer(routeLine);
+    routeLine = L.geoJSON(route.geometry, {
+      style: { color: '#4ade80', weight: 5, opacity: .85 }
+    }).addTo(map);
+
+    document.getElementById('etaCard').style.display = 'block';
+    document.getElementById('etaKm').textContent  = (route.distance / 1000).toFixed(1);
+    const mins = Math.round(route.duration / 60);
+    document.getElementById('etaMin').textContent = mins >= 60
+      ? `${Math.floor(mins/60)} س ${mins%60} د` : `${mins} دقيقة`;
+    document.getElementById('etaUpdated').textContent =
+      '🕐 آخر تحديث: ' + new Date().toLocaleTimeString('ar-EG');
+
+    // 🔔 تنبيه صوتي قبل الوصول
+    const alertMin = parseInt(document.getElementById('alertBefore').value);
+    if (alertMin > 0 && mins <= alertMin && !alerted) {
+      alerted = true;
+      playAlarm();
+    } else if (mins > alertMin + 1) {
+      alerted = false; // إعادة التفعيل لو الباص ابتعد تاني
+    }
+  } catch (e) {
+    showError('خطأ في الاتصال بخادم المسارات');
+  }
+}
+</script>
+</body>
+</html>
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap', maxZoom: 19
   }).addTo(map);
 }
