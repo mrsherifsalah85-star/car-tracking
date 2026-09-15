@@ -31,25 +31,22 @@
   .legend span { display: flex; align-items: center; gap: 5px; }
   .lg-dot { width: 11px; height: 11px; border-radius: 50%; }
   .error { color: #f87171; font-size: .85rem; margin-top: 10px; display: none; text-align:center; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 </style>
 </head>
 <body>
 <div class="container">
   <h1>🧭 صفحة الراكب</h1>
-  <p class="subtitle">تتبع السيارة لحظياً + التنبيه الصوتي المزدوج</p>
+  <p class="subtitle">تتبع السيارة لحظياً مع التنبيه الصوتي الناطق</p>
 
   <div class="card">
     <label>🔑 كود السيارة التي تريد تتبعها:</label>
     <input type="text" id="vehicleId" value="car-001" placeholder="نفس كود السائق">
     <button class="btn" id="btnTrack" onclick="startWatching()">📡 ابدأ المتابعة</button>
-    
-    <label style="margin-top:12px">🔊 التنبيه الصوتي قبل وصول الباص بـ:</label>
-    <select id="alertBefore">
-      <option value="5" selected>5 دقائق</option>
-      <option value="3">3 دقائق</option>
-      <option value="1">دقيقة واحدة</option>
-      <option value="0">إيقاف صفارة الإنذار</option>
+
+    <label style="margin-top:12px">🗣️ التنبيه الصوتي الناطق:</label>
+    <select id="enableVoice">
+      <option value="1" selected>مُفعل (تنبيه صوتي للوقت)</option>
+      <option value="0">معطل</option>
     </select>
     <div class="error" id="errorBox"></div>
   </div>
@@ -99,78 +96,14 @@ let myPos = null, carPos = null;
 let lastRouteTime = 0, lastCarLoc = null;
 let fbListener = null, myWatchId = null;
 
-let audioCtx = null, alertedAlarm = false;
-let alarmInterval = null;
-let announcedTimes = new Set();
+// المتغيرات الخاصة بالرسائل الصوتية (لتجنب التكرار)
+let announcedTimes = new Set(); 
 
-function ensureAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-}
-
-// 🚨 ① صوت الإنذار الحاد والمستمر
-function playAlarm() {
-  ensureAudio();
-  if (alarmInterval) return;
-
-  showStopSoundButton();
-
-  alarmInterval = setInterval(() => {
-    const playBeep = (freq, duration, delay) => {
-      setTimeout(() => {
-        if (!alarmInterval) return;
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-        gain.gain.setValueAtTime(1, audioCtx.currentTime);
-
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-
-        osc.start();
-        osc.stop(audioCtx.currentTime + duration);
-      }, delay * 1000);
-    };
-
-    playBeep(1200, 0.2, 0);
-    playBeep(800, 0.2, 0.25);
-    playBeep(1200, 0.2, 0.5);
-    playBeep(800, 0.2, 0.75);
-
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100]);
-  }, 1000);
-}
-
-// 🔕 إيقاف الإنذار الحاد
-function stopAlarm() {
-  if (alarmInterval) {
-    clearInterval(alarmInterval);
-    alarmInterval = null;
-  }
-  const btn = document.getElementById('btnStopSound');
-  if (btn) btn.style.display = 'none';
-}
-
-function showStopSoundButton() {
-  let btn = document.getElementById('btnStopSound');
-  if (!btn) {
-    btn = document.createElement('button');
-    btn.id = 'btnStopSound';
-    btn.className = 'btn';
-    btn.style.cssText = 'background: #ef4444; color: white; margin-top: 10px; font-size: 1.1rem; padding: 15px; animation: pulse 1s infinite;';
-    btn.innerHTML = '🔕 إيقاف صوت التنبيه';
-    btn.onclick = stopAlarm;
-    document.querySelector('.card').appendChild(btn);
-  } else {
-    btn.style.display = 'block';
-  }
-}
-
-// 🗣️ ② التنبيه الصوتي الناطق بالعربية
+// 🗣️ دالة نطق النصوص باللغة العربية
 function speakText(text) {
+  if (document.getElementById('enableVoice').value === "0") return;
   if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel(); // إيقاف أي صوت سابق قبل نطق الجديد
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'ar-SA';
     utterance.rate = 0.9;
@@ -178,6 +111,7 @@ function speakText(text) {
   }
 }
 
+// 🔔 فحص الوقت المتبقي ونطق التنبيه المناسب
 function checkVoiceAlerts(mins) {
   let message = "";
 
@@ -200,6 +134,7 @@ function checkVoiceAlerts(mins) {
 
   if (message) {
     speakText(message);
+    if (navigator.vibrate) navigator.vibrate([300, 100, 300]); // اهتزاز مع الصوت
   }
 }
 
@@ -224,7 +159,9 @@ function startWatching() {
   if (!vehicleId) { showError('اكتب كود السيارة'); return; }
   if (!navigator.geolocation) { showError('المتصفح لا يدعم GPS'); return; }
   if (!map) initMap();
-  ensureAudio();
+
+  // تفعيل محرك الصوت برحابة عند الضغط أول مرة
+  speakText("تم تفعيل المتابعة الصوتية بنجاح");
 
   document.getElementById('btnTrack').disabled = true;
   document.getElementById('btnTrack').textContent = '⏳ جارِ الاتصال...';
@@ -273,7 +210,7 @@ async function tryRoute() {
       L.latLng(lastCarLoc.lat, lastCarLoc.lng),
       L.latLng(carPos.lat, carPos.lng)
     );
-    if (moved < 40 && now - lastRouteTime < 20000) return;
+    if (moved < 30 && now - lastRouteTime < 15000) return;
   }
   lastRouteTime = now;
   lastCarLoc = { ...carPos };
@@ -303,17 +240,7 @@ async function tryRoute() {
     document.getElementById('etaUpdated').textContent =
       '🕐 آخر تحديث: ' + new Date().toLocaleTimeString('ar-EG');
 
-    // 🚨 تشغيل صفارة الإنذار المستمرة
-    const alertMin = parseInt(document.getElementById('alertBefore').value);
-    if (alertMin > 0 && mins <= alertMin && !alertedAlarm) {
-      alertedAlarm = true;
-      playAlarm();
-    } else if (mins > alertMin + 1) {
-      alertedAlarm = false;
-      stopAlarm();
-    }
-
-    // 🗣️ نطق الرسالة العربية في موعدها
+    // 🗣️ نطق الرسالة العربية حسب الوقت المتبقي
     checkVoiceAlerts(mins);
 
   } catch (e) {
