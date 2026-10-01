@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>صفحة السائق</title>
+<style>
+  body{margin:0;font-family:Tahoma,Arial,sans-serif;background:#f3f4fb;color:#222;
+    display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+  h1{font-size:20px;color:#1a237e;margin:0 0 18px}
+  input{width:100%;max-width:340px;font-size:18px;padding:12px;border:1px solid #bbb;
+    border-radius:10px;text-align:center;box-sizing:border-box}
+  button{width:100%;max-width:340px;font-size:20px;padding:16px;margin-top:14px;border:0;
+    border-radius:12px;color:#fff;background:#2e7d32}
+  button.stop{background:#c62828}
+  #msg{margin-top:20px;font-size:16px;line-height:1.8;text-align:center;max-width:340px}
+  #coords{direction:ltr;font-size:15px;color:#555;margin-top:6px}
+</style>
+</head>
+<body>
+<h1>🚌 صفحة السائق</h1>
+<input id="car" value="car-001" placeholder="كود السيارة">
+<button id="btn">بدء التتبع</button>
+<div id="msg">اضغط "بدء التتبع" ووافق على طلب الموقع.</div>
+<div id="coords"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  firebase.initializeApp({
+    apiKey: "AIzaSyDn7mzRrWvCeEyCdq_O0p-Aq1aOGWsT8ok",
+    authDomain: "car-tracking-5ef70.firebaseapp.com",
+    projectId: "car-tracking-5ef70",
+    storageBucket: "car-tracking-5ef70.appspot.com",
+    messagingSenderId: "663036520242",
+    appId: "1:663036520242:web:d6bbf3bce8519b8871d92b"
+  });
+  const db = firebase.firestore();
+
+  const params = new URLSearchParams(location.search);
+  if (params.get("car")) document.getElementById("car").value = params.get("car");
+
+  const btn = document.getElementById("btn");
+  const msg = document.getElementById("msg");
+  const coords = document.getElementById("coords");
+  let watchId = null, wakeLock = null, carId = "";
+
+  async function keepScreenOn() {
+    try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); }
+    catch (e) {}
+  }
+
+  function start() {
+    carId = document.getElementById("car").value.trim();
+    if (!carId) { msg.textContent = "اكتب كود السيارة الأول."; return; }
+    if (!navigator.geolocation) { msg.textContent = "المتصفح ده مش بيدعم الموقع."; return; }
+    msg.textContent = "جارٍ طلب الموقع...";
+    watchId = navigator.geolocation.watchPosition(onPos, onErr,
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+    keepScreenOn();
+    btn.textContent = "إيقاف التتبع";
+    btn.className = "stop";
+  }
+
+  function stop() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    if (wakeLock) { wakeLock.release(); wakeLock = null; }
+    db.collection("tracking").doc(carId).set({ active: false,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    btn.textContent = "بدء التتبع";
+    btn.className = "";
+    msg.textContent = "التتبع اتوقف.";
+    coords.textContent = "";
+  }
+
+  function onPos(p) {
+    const lat = p.coords.latitude, lng = p.coords.longitude;
+    db.collection("tracking").doc(carId).set({
+      active: true,
+      lat: lat,
+      lng: lng,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true }).then(() => {
+      msg.textContent = "✅ التتبع شغال، والموقع بيتبعت.";
+      coords.textContent = lat.toFixed(5) + " , " + lng.toFixed(5);
+    }).catch((e) => { msg.textContent = "مشكلة في الحفظ: " + e.message; });
+  }
+
+  function onErr(e) {
+    if (e.code === 1) msg.textContent = "الموقع مرفوض. فعّل إذن الموقع للمتصفح من الإعدادات وجرب تاني.";
+    else if (e.code === 2) msg.textContent = "مش قادر أحدد الموقع. اتأكد إن الـ GPS شغال في الموبايل.";
+    else msg.textContent = "انتهى الوقت قبل ما الموقع يوصل. جرب تاني في مكان مفتوح.";
+  }
+
+  btn.addEventListener("click", () => { watchId === null ? start() : stop(); });
+</script>
+</body>
+</html>
