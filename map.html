@@ -65,10 +65,11 @@
     if (doc.exists) {
       const d = doc.data();
       let lat = null, lng = null;
-      if (d.location && typeof d.location.latitude === "number") {
-        lat = d.location.latitude; lng = d.location.longitude;
-      } else if (typeof d.lat === "number" && typeof d.lng === "number") {
+      if (typeof d.lat === "number" && typeof d.lng === "number" && !(d.lat === 0 && d.lng === 0)) {
         lat = d.lat; lng = d.lng;
+      } else if (d.location && typeof d.location.latitude === "number" &&
+                 !(d.location.latitude === 0 && d.location.longitude === 0)) {
+        lat = d.location.latitude; lng = d.location.longitude;
       }
       if (d.active === true && lat !== null && lng !== null && !(lat === 0 && lng === 0)) {
         const pos = [lat, lng];
