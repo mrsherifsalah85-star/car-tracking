@@ -64,8 +64,14 @@
     const txt = document.getElementById("statusText");
     if (doc.exists) {
       const d = doc.data();
-      if (d.active === true && typeof d.lat === "number" && typeof d.lng === "number") {
-        const pos = [d.lat, d.lng];
+      let lat = null, lng = null;
+      if (d.location && typeof d.location.latitude === "number") {
+        lat = d.location.latitude; lng = d.location.longitude;
+      } else if (typeof d.lat === "number" && typeof d.lng === "number") {
+        lat = d.lat; lng = d.lng;
+      }
+      if (d.active === true && lat !== null && lng !== null && !(lat === 0 && lng === 0)) {
+        const pos = [lat, lng];
         if (!marker) {
           marker = L.marker(pos, { icon: busIcon }).addTo(map);
           map.setView(pos, 16);
